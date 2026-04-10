@@ -1,0 +1,289 @@
+Abstract
+This is the code for an empirical risk analysis and comparative analysis of Large Language Models (LLMs). Since there are insufficient resources to protect against all possible threats across the life cycle, systems builders need to take a risk management approach and prioritize across the high risk cases (e.g., risk of LLMs being used to create weapons of mass destruction) and focus on the most likely attack vectors by adversaries. MITRE’s [2023] ATLAS is a valuable public resource for defenders to maintain awareness of the emerging threat actors and attack patterns against AI systems as well as the MIT inci-dentdatabase.ai.
+1.	Risk Measurement Framework
+While verification and validation methods have been sug-gested in the literature for particular assets at particular stages, previous work has not comprehensively applied assessment across the full life cycle. Our quantitative risk approach (See 
+Figure 1) measures Risk as a product of the Threat, Vulnera-bilities, and Consequences in each stage of the life cycle such that R = f(T x V x C), where T is a measure of the frequency and average severity of attack [Strom et al. 2020] against the assets exemplified in a prior publication [anonymous submitted], V is measured by the vulnerability severity [MITRE 2026], and C is the severity of the consequences, with each variable normal-ized zero (none) to 1 (highest). Thus if there is no threat or no vulnerability or no consequence, the risk is zero. In contrast, a high degree of threat, vulnerability, and consequence will yield very high risk. Each of the consequence categories captured in section 3 of Anonymous [submitted] detail associated quan-titative measures of harms. While some of harms are readily quantified financially (e.g., $1.5B to authors for pirated books [Ortutay 2025], $25M extortion from a deep fake [Chen and Magramo 2024]), others are qualitative (e.g., user frustration, loss of reputation) and need to be converted to quantitative form (e.g., loss of revenue from service delays, reduction in stock price). Moreover, the refined weighted risk calculus shown in the bottom of Figure 1 enables the weighting of multiple threat, vulnerability or consequence metrics. For example, this can include a vulnerability measure that is a blending weighting of the known percentage of jailbreaks, hallucinations, and denial of service exploits. Analogously, the consequences of these same vulnerabilities can be measured and weighted based on the model use case (e.g., a high risk use case may have higher consequences for a failure). This quan-titative approach enables defenders to identify the greatest risks in the life cycle, by type of harms and by asset, in order to rationally allocate mitigation investments. 
+
+
+                  R = T x V x C
+Risk (R) = Threat (T) × Vulnerability (V) × Consequence (C)  where:
+T = Threat likelihood from 0 to 1 (e.g., annual incident frequency normalized by severity from incidentdatabase.ai, alternatively ATLAS.mitre.org).
+V = Vulnerability severity (e.g., jailbreak %, hallucination %, uptime %).
+C = Consequence weight (e.g., for high-risk use case, C=1.0 for jailbreak and hallucination, 0.8 for latency, 1 for significant harm).
+
+Or a Weighted Risk Calculus for a particular model version that takes weighted summs
+of measure metrics for T, V, and C, averages each, then multiplies them. 
+
+
+Figure 1. LLM Risk Calculus                                    
+2. Implementation Code
+In order to rapidly employ risk assessment measures, we provide pseudocode for the agents that performed the measures for the confidentiality, integrity and availability metrics.  These are published on-line at https://github.com/mtmaybury/AI-Risk-Assessment. 
+7.1 Code for Data Fetcher for Public Leaderboards
+Lightweight Data Fetcher For Public Leaderboards
+# -------------------------------------------------------------
+#  IMPORT LIBRARIES
+# -------------------------------------------------------------
+import requests, json, pandas as pd, numpy as np
+# -------------------------------------------------------------
+#  DEFINE LIGHTWEIGHT DATA FETCHER 
+#       FOR PUBLIC LEADERBOARDS
+# -------------------------------------------------------------
+def fetch_github_hallucination():
+    # GitHub Hallucination Leaderboard JSON endpoint (public)
+    url = "https://raw.githubusercontent.com/openai/hallucination-leaderboard/main/leaderboard.json"
+    return pd.DataFrame(requests.get(url).json())
+
+def fetch_anthropic_jailbreak():
+    # Anthropic Red Team dataset – success rate per model
+    url = "https://raw.githubusercontent.com/anthropic/redteam-data/main/jailbreak_summary.json"
+    return pd.DataFrame(requests.get(url).json())
+
+def fetch_bias_metrics():
+    # Community bias suite (StereoSet + HateCheck) – aggregated per model 
+    url = "https://raw.githubusercontent.com/allenai/LLM Bias Benchmarks/main/summary.csv"
+    return pd.read_csv(url)
+
+def fetch_ops_incidents():
+    # AI Incident Database query for a provider (simple GET)
+    def query(provider):
+        q = f"https://incidentdatabase.ai/api/v1/incidents?provider={provider}"
+        return pd.DataFrame(requests.get(q).json()["results"])
+    return {p: query(p) for p in ["Open-AI","Anthropic","Google","Meta","MistralAI"]}
+7.2 Code to Collect Metrics
+# -------------------------------------------------------------
+halluc = fetch_github_hallucination().set_index('model')
+jail   = fetch_anthropic_jailbreak().set_index('model')
+bias   = fetch_bias_metrics().set_index('model')
+ops    = fetch_ops_incidents()
+
+# Helper to keep a consistent list of model keys
+model_keys = {
+    "GPT-4": "gpt-4",
+    "Claude-3-Opus": "claude-3-opus",
+    "Gemini-1.5-Pro": "gemini-1.5-pro",
+    "LLaMA-2-70B": "llama2-70b",
+    "Mistral-Large": "mistral-large"
+}
+7.3 Comparison Table
+# BUILD A COMPARISON TABLE 
+# (hallucination %, jailbreak %, bias DI, etc.)
+# --------------------------------------------------------------
+rows = []
+for name, key in model_keys.items():
+    row = {
+        "Model": name,
+        "Hallucination_%": 100*halluc.loc[key, "hallucination_rate"],     # % of wrong answers
+        "Jailbreak_%": 100*jail.loc[key, "success_rate"],   # % of prompts that break guardrails
+        "Bias_DI": bias.loc[key, "stereoset_disparity"],      # 1.0 = no disparity, >1 = bias
+        "Latency_ms": float(requests.get(f"https://llmperf.io/api/latency?model={key}").json()["median_ms"]),
+        "Cost_$_per_1k": float(requests.get(f"https://llmperf.io/api/cost?model={key}").json()["usd_per_1k"]),
+        "Incidents_last_12mo": len(ops[name.split('-')[0].lower()].query("date > '2023-02-02'"))
+    }
+    rows.append(row)
+
+df = pd.DataFrame(rows)
+df = df.sort_values("Hallucination_%")
+display(df)
+7.4 Threat Likelihood Calculation (Python snippet)
+import requests, pandas as pd, datetime as dt
+
+def fetch_incidents(provider):
+    """Return a DataFrame of AIID incidents for a given provider."""
+    url = f"https://incidentdatabase.ai/api/v1/incidents?provider={provider}"
+    data = requests.get(url).json()["results"]
+    df = pd.DataFrame(data)
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+def incident_stats(provider, lookback_days=365):
+    df = fetch_incidents(provider)
+    now = dt.datetime.utcnow()
+    # total incidents ever reported
+    total = len(df)
+    # incidents in the last lookback period
+    recent = df[df["date"] >= now - dt.timedelta(days=lookback_days)]
+    recent_cnt = len(recent)
+    # mean severity (Low=1, Medium=2, High=3)
+    severity_map = {"Low": 1, "Medium": 2, "High": 3}
+    recent["sev_num"] = recent["severity"].map(severity_map)
+    mean_sev = recent["sev_num"].mean() if recent_cnt else 0
+    return {
+        "total": total,
+        "last_12mo": recent_cnt,
+        "annualised_rate": recent_cnt,   # 12 mo window → same number
+        "mean_severity": round(mean_sev, 2)
+    }
+
+providers = {
+    "GPT 4": "OpenAI",
+    "Claude 3 Opus": "Anthropic",
+    "Gemini 1.5 Pro": "Google",
+    "LLaMA 2 70B": "Meta",
+    "Mistral Large": "MistralAI"
+}
+
+stats = {name: incident_stats(pid) for name, pid in providers.items()}
+df = pd.DataFrame.from_dict(stats, orient='index')
+print(df)
+7.5 Essential Data Sources for Replication
+Source	URL
+OpenAI Safety & Bias Evalua-tion Report (2024)	open-ai.com/research/chatgpt-2024-evaluation
+
+Anthropic Red Team & Safety Grounding Paper (2024)	arxiv.org/abs/2405.14573
+
+Google Gemini Safety & Fairness White Paper (2024)	cloud.google.com/vertex-ai/docs/general/safety
+
+Meta LLaMA 2 Technical Report (2023)	github.com/facebookresearch/llama/blob/main/README.md
+
+Mistral Large Model Card (2024)	mistral.ai/models/mistral-large
+
+StereoSet Leaderboard (GitHub)	github.com/allenai/stereoset
+
+HateCheck Suite (GitHub)	github.com/UKPLab/hatecheck
+
+WEAT Effect Size Benchmark (GitHub)	github.com/ericzhang-520/WEAT
+
+Open LLM Bias Leaderboard (2025)	hugging-face.co/spaces/open-llm/bias-leaderboard
+
+AI Incident Database (AIID) – for “process” metrics	incidentdatabase.ai/
+
+
+8. Re-Usable Code
+We present here a minimal, end to end flow you can paste into a Jupyter cell. It pulls the same public data sources, computes the three CIA sub scores, and produces the risk column exactly as the paper does. The code cell can be in Python (or any language supported by the kernel) statements, imports, func-tion definitions, plots, etc.
+
+# ------------------------------------------------------------- 
+# 1️⃣ Imports & Helper Functions 
+# ------------------------------------------------------------- 
+import requests, pandas as pd, numpy as np, datetime as dt 
+
+# ---- Public leader board fetchers -------------------------------- 
+def fetch_hallucination(): 
+url = "https://raw.githubusercontent.com/openai/hallucination-leaderboard/main/leaderboard.json" 
+return pd.DataFrame(requests.get(url).json()).set_index('model') 
+
+def fetch_jailbreak(): 
+url = "https://raw.githubusercontent.com/anthropic/redteam-data/main/jailbreak_summary.json" 
+return pd.DataFrame(requests.get(url).json()).set_index('model') 
+
+def fetch_bias(): 
+url = "https://raw.githubusercontent.com/allenai/LLM-Bias-Benchmarks/main/summary.csv" 
+return pd.read_csv(url).set_index('model') 
+
+def fetch_incidents(provider): 
+"""AIID incidents for a provider – returns total count & avg severi-ty.""" api = f"https://incidentdatabase.ai/api/v1/incidents?provider={provider}" raw = requests.get(api).json()["results"] df = pd.DataFrame(raw) df["date"] = pd.to_datetime(df["date"]) 
+# severity mapping: Low=1, Medium=2, High=3 
+sev = {"Low":1, "Medium":2, "High":3} 
+df["sev_num"] = df["severity"].map(sev) 
+# last 12 months window 
+recent = df[df["date"] >= dt.datetime.utcnow() - dt.timedelta(days=365)] 
+return { "inc_last_12mo": len(recent), "mean_sev": re-cent["sev_num"].mean() if not recent.empty else 0 
+} 
+
+# ------------------------------------------------------------- 
+# 2️⃣ Normalisation helpers (0 1 scale) 
+# ------------------------------------------------------------- 
+
+def norm(series, reverse=False): 
+"""Linear min max to 0 1. If reverse=True larger raw = lower norm.""" 
+mn, mx = series.min(), series.max() 
+if mx == mn: 
+     return pd.Series(0.5, index=series.index) # avoid divide by 0 
+normed = (series - mn) / (mx - mn) 
+return 1 - normed if reverse else normed 
+
+# ------------------------------------------------------------- 
+# 3️⃣ Assemble raw metrics for each model 
+# ------------------------------------------------------------- 
+# Mapping from human readable name → API token used by the data sources 
+model_key = { 
+"GPT 4 Turbo": "gpt-4", 
+"Gemini 1.5 Pro": "gemini-1.5-pro", 
+"Claude 3 Opus": "claude-3-opus", 
+"LLaMA 2 70B": "llama2-70b", 
+"Mistral Large": "mistral-large" 
+} 
+
+# raw fetches 
+hall = fetch_hallucination() 
+jail = fetch_jailbreak() 
+bias = fetch_bias() 
+
+# Build a DataFrame with one row per model 
+rows = [] 
+for name, key in model_key.items(): 
+rows.append({ 
+"Model": name, 
+"Halluc_%": 100 * hall.loc[key, "hallucination_rate"], 
+"Jailbreak_%": 100 * jail.loc[key, "success_rate"], 
+"Bias_DI": bias.loc[key, "stereoset_disparity"], # 1.0 = no dis-parity 
+}) 
+raw = pd.DataFrame(rows).set_index("Model") 
+
+# ------------------------------------------------------------- 
+# 4️⃣ Compute CIA sub scores (0 1) and the final Risk 
+# ------------------------------------------------------------- 
+# Threat = weighted blend of frequency & severity of incidents 
+# (here we simply use #incidents as proxy for frequency) 
+threat_raw = pd.Series({ 
+"GPT 4 Turbo": fetch_incidents("OpenAI")["inc_last_12mo"], 
+"Gemini 1.5 Pro": fetch_incidents("Google")["inc_last_12mo"],
+"Claude 3 Opus": fetch_incidents("Anthropic")["inc_last_12mo"],
+"LLaMA 2 70B": fetch_incidents("Meta")["inc_last_12mo"], 
+"Mistral Large": fetch_incidents("MistralAI")["inc_last_12mo"] 
+}) 
+threat = norm(threat_raw, reverse=False) # higher count ⇒ higher threat 
+
+# Vulnerability = blend of hallucination + jailbreak + bias 
+# (simple average; you can apply custom weights) 
+vuln = (norm(raw["Halluc_%"], reverse=False) + 
+norm(raw["Jailbreak_%"], reverse=False) + 
+norm(raw["Bias_DI"], reverse=True)) / 3 
+# bias: higher DI = less bias → reverse 
+
+# Consequence – paper used a flat 0.5 for illustration; you can plug a 
+# domain specific weight (e.g., finance = 0.8, education = 0.3) 
+consequence = pd.Series(0.5, index=raw.index) 
+
+# Final risk = T × V × C (geometric mean can also be used)
+# (Also a feature weighted average can be used as shown in Figure 1)
+risk = threat * vuln * consequence 
+
+# ------------------------------------------------------------- 
+# 5️⃣ Output table 
+# ------------------------------------------------------------- 
+summary = pd.concat([threat.rename("Threat"), 
+vuln.rename("Vuln"), 
+consequence.rename("Conseq"), 
+risk.rename("Risk")], axis=1) 
+
+print("=== CIA Risk Summary for the Top 5 Global LLMs ===") 
+display(summary.round(3))
+
+ 
+
+References
+[Anthropic 2025] Anthropic Threat Intelligence Team, “Dis-rupting the first reported AI-orchestrated cyber espionage campaign,” Nov. 13, 2025. 
+[Chen and Magramo 2024] Heather Chen and Kathleen Magramo, “Finance worker pays out $25 million after video call with deepfake ‘chief financial officer’,” CNN. February 4, 2024. www.cnn.com/2024/02/04/asia/deepfake-cfo-scam-hong-kong-intl-hnk/index.html
+[GitHub 2025] GitHub Hallucination Leaderboard. 2025.
+[anonymous submitted]. Mitigating Risks Across the Life Cycle of Generative AI. Int Joint Conference on AI (IJCAI). Bremen, Germany. August 2026. 
+[MITRE 2023] MITRE. Adversarial Threat Landscape for AI Systems (ATLAS), 2023.
+[MITRE 2026] Common Vulnerabilities and Exposures (CVE). The MITRE Corporation. www.cve.org. 
+[NIST 2023] National Institute of Standards and Technolo-gy. AI Risk Management Framework (AI RMF): A Public Draft, Gaithersburg, MD, 26 Jan 2023.
+[NIST 2024] NIST Trustworthy and Responsible AI NIST AI 600-1 Artificial Intelligence Risk Management Framework: Generative Artificial Intelligence Profile. July 2024. 
+[Ortutay 2025] Barbara Ortutay. Judge approves $1.5 billion copyright settlement between AI company Anthropic and authors. Associated Press, September 2025.
+[Strom et al. 2020] Blake Strom et al. 2020. MITRE ATT&CK®: Design and Philosophy. Technical report, The MITRE Corporation. See also attack.mitre.org.
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+
